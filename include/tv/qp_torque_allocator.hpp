@@ -1,11 +1,12 @@
 #pragma once
 
-#include <algorithm>
-#include <cmath>
+#include <OsqpEigen/OsqpEigen.h>
 
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
-#include <OsqpEigen/OsqpEigen.h>
+#include <OsqpEigen/Constants.hpp>
+#include <algorithm>
+#include <cmath>
 
 #include "interfaces.hpp"
 #include "types.hpp"
@@ -55,7 +56,7 @@ class QpTorqueAllocator : public ITorqueAllocator<QpTorqueAllocator> {
     //   w_reg  regularisation weight on torque magnitude
     QpTorqueAllocator(double r_w, double t_f, double t_r, double t_max, double mu, double w_fx,
                       double w_mz, double w_reg)
-        : r_w_(r_w), t_f_(t_f), t_r_(t_r), t_max_(t_max), mu_(mu) {
+        : r_w_(r_w), t_max_(t_max), mu_(mu) {
         // --- Effectiveness matrix B (2×4) ---
         const double inv_r = 1.0 / r_w;
         const double tf_term = t_f / (2.0 * r_w);
@@ -118,8 +119,7 @@ class QpTorqueAllocator : public ITorqueAllocator<QpTorqueAllocator> {
     // VehicleState:    [vx, vy, yaw_rate, steering_angle, ax, ay]
     // YawMomentCommand: {mz_, fx_total_}
     // ForceVector:     [Fx×4, Fy×4, Fz×4]
-    [[nodiscard]] WheelTorques allocateImpl(const VehicleState& state,
-                                            const YawMomentCommand& cmd,
+    [[nodiscard]] WheelTorques allocateImpl(const VehicleState& state, const YawMomentCommand& cmd,
                                             const ForceVector& forces) {
         (void)state;  // reserved for speed-dependent torque maps
 
@@ -135,26 +135,24 @@ class QpTorqueAllocator : public ITorqueAllocator<QpTorqueAllocator> {
         for (int i = 0; i < 4; ++i) {
             const double fz = std::max(0.0, forces.fz_[i]);
             const double fy = forces.fy_[i];
-            const double fx_cap =
-                std::sqrt(std::max(0.0, ((mu_ * fz) * (mu_ * fz)) - (fy * fy)));
+            const double fx_cap = std::sqrt(std::max(0.0, ((mu_ * fz) * (mu_ * fz)) - (fy * fy)));
             ub[i] = std::min(t_max_, r_w_ * fx_cap);
             lb[i] = -ub[i];
         }
         solver_.updateBounds(lb, ub);
 
-        // --- Solve (OSQP warm-starts from previous solution) ---
-        if (!solver_.solve()) {
-            return WheelTorques::Zero();
+        switch (solver_.solveProblem()) {
+            case OsqpEigen::ErrorExitFlag::NoError:
+                return solver_.getSolution().head<4>();
+                break;
+            default:
+                return WheelTorques::Zero();
         }
-
-        return solver_.getSolution().head<4>();
     }
 
    private:
     // Vehicle geometry
-    double r_w_;   // wheel radius [m]
-    double t_f_;   // front track width [m]
-    double t_r_;   // rear track width [m]
+    double r_w_;  // wheel radius [m]
 
     // Limits
     double t_max_;  // per-wheel motor torque cap [Nm]

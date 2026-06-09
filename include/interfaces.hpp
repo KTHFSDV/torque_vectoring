@@ -12,23 +12,23 @@ concept ForceEstimator = requires(T estimator, const VehicleState& state) {
     { estimator.estimateForcesImpl(state) } -> std::same_as<ForceVector>;
 };
 
-/// Type must provide: YawMomentCommand computeImpl(const VehicleState&, const ForceVector&, const SteeringCommand&)
+/// Type must provide: YawMomentCommand computeImpl(const VehicleState&, const ForceVector&, const
+/// SteeringCommand&)
 template <typename T>
-concept YawMomentGenerator =
-    requires(T generator, const VehicleState& state, const ForceVector& forces,
-             const SteeringCommand& cmd) {
-        { generator.computeImpl(state, forces, cmd) } -> std::same_as<YawMomentCommand>;
-    };
+concept YawMomentGenerator = requires(T generator, const VehicleState& state,
+                                      const ForceVector& forces, const SteeringCommand& cmd) {
+    { generator.computeImpl(state, forces, cmd) } -> std::same_as<YawMomentCommand>;
+};
 
-/// Type must provide: WheelTorques allocateImpl(const VehicleState&, const YawMomentCommand&, const ForceVector&)
+/// Type must provide: WheelTorques allocateImpl(const VehicleState&, const YawMomentCommand&, const
+/// ForceVector&)
 template <typename T>
-concept TorqueAllocator =
-    requires(T allocator, const VehicleState& state, const YawMomentCommand& cmd,
-             const ForceVector& forces) {
-        { allocator.allocateImpl(state, cmd, forces) } -> std::same_as<WheelTorques>;
-    };
+concept TorqueAllocator = requires(T allocator, const VehicleState& state,
+                                   const YawMomentCommand& cmd, const ForceVector& forces) {
+    { allocator.allocateImpl(state, cmd, forces) } -> std::same_as<WheelTorques>;
+};
 
-template <YawMomentGenerator Derived>
+template <typename Derived>
 class IYawController {
    public:
     YawMomentCommand compute(const VehicleState& s, const ForceVector& forces,
@@ -37,7 +37,7 @@ class IYawController {
     }
 };
 
-template <ForceEstimator Derived>
+template <typename Derived>
 class IForceEstimator {
    public:
     ForceVector estimateForces(const VehicleState& s) {
@@ -45,7 +45,7 @@ class IForceEstimator {
     }
 };
 
-template <TorqueAllocator Derived>
+template <typename Derived>
 class ITorqueAllocator {
    public:
     WheelTorques allocate(const VehicleState& state, const YawMomentCommand& cmd,
