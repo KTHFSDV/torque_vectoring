@@ -2,11 +2,9 @@
 """
 Launch file for torque_vectoring_pkg.
 
-This launch file starts the time_publisher and time_subscriber nodes
-with parameters loaded from the config file.
+Starts the torque-vectoring node with its topics remapped onto the
+vehicle bus / navigation stack.
 """
-
-import os
 
 from launch import LaunchDescription
 from launch_ros.actions import Node
@@ -23,15 +21,18 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            # Time Publisher Node (C++)
             Node(
                 package="torque_vectoring_pkg",
-                executable="torque_vectoring_pkg",
+                executable="torque_vectoring_node",
                 name="torque_vectoring_node",
                 output="screen",
                 remappings=[
-                    ("steering_cmd", "navigation/dv_control_target"),
-                    ("imu", "dlio/odom"),
+                    ("cmd_in", "navigation/dv_control_target"),
+                    ("odom", "/odom"),
+                    ("imu", "/imu"),
+                    ("wheel_speeds", "vehicle/wheel_speeds"),
+                    ("motor_torques", "ros2can/receive/vehicle_status_motor_torques"),
+                    ("cmd_out", "ros2can/send/dv_control_target_tv"),
                 ],
             ),
         ]

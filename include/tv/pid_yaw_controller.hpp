@@ -1,7 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 
+#include "config.hpp"
 #include "interfaces.hpp"
 #include "types.hpp"
 
@@ -9,51 +11,57 @@ namespace tv {
 
 // High-level yaw moment controller — docs/tv.md §layer 2
 //
-//   Feedforward (yaw moment): bicycle model steady-state yaw moment
-//   Feedback    (yaw moment): super-twisting Sliding Mode Control (Goggia et al. 2015)
-//   Fx demand               : PI velocity tracker (TU Munich / KIT FSG approach)
+//   Yaw moment: PID on the yaw-rate error (derivative low-pass filtered)
+//   Fx demand : 2-DoF PI velocity tracker (TU Munich / KIT FSG approach)
 //
 // SteeringCommand layout: [delta (rad), vx_ref (m/s), r_ref (rad/s)]
 // Call setDt(dt) once per control cycle before computeImpl.
 class PIDYawController : public IYawController<PIDYawController> {
    public:
-    // Bicycle model params (yaw moment feedforward):
-    //   c_f           front axle cornering stiffness [N/rad]
-    //   c_r           rear axle cornering stiffness [N/rad]
-    //   l_f           front axle to CG [m]
-    //   l_r           rear axle to CG [m]
+    // Yaw PID params:
+    //   kp_yaw        proportional gain on yaw-rate error
+    //   ki_yaw        integral gain on yaw-rate error
+    //   kd_yaw        derivative gain on the yaw-rate error
+    //   i_max_yaw     symmetric saturation on the integral term |ki·∫e_r dt| [Nm]
+    //   d_tau_yaw     low-pass time constant on the derivative term [s]
     //
-    // Loss feedforward params:
-    //   rho           air density [kg/m³]
-    //   c_d           drag coefficient
-    //   frontal_area  frontal reference area [m²]
-    //   c_rr          rolling resistance coefficient
-    //
-    // Longitudinal PI params:
+    // Longitudinal 2-DoF PI params:
     //   mass          vehicle mass [kg]
     //   k_p           proportional gain [1/s]
     //   k_i           integral gain     [1/s²]
+    //   b             setpoint weight on the proportional term [0, 1] (2-DoF PI)
     //   eta           drivetrain efficiency (0, 1]
+    //   mu            tyre-road friction coefficient (for the Fx grip clamp)
+    //   vx_ref_rate   max slew of the velocity reference [m/s²]
     //
-    //   Fx_total = (k_p·ev + k_i·∫ev dt) · mass / eta + f_loss
-    //   f_loss = f_aero + f_roll  (only when accelerating, zero when braking)
-    PIDYawController(double c_f, double c_r, double l_f, double l_r, double rho, double c_d,
-                     double frontal_area, double c_rr, double kp_yaw, double ki_yaw, double mass,
-                     double k_p, double k_i, double eta)
-        : c_f_(c_f),
-          c_r_(c_r),
-          l_f_(l_f),
-          l_r_(l_r),
-          rho_(rho),
-          c_d_(c_d),
-          frontal_area_(frontal_area),
-          c_rr_(c_rr),
-          kp_yaw_(kp_yaw),
+    //   ep = b·vx_ref − vx     (setpoint-weighted proportional error)
+    //   ev =   vx_ref − vx     (integral error — sees the full error)
+    //   Fx_total = clamp((k_p·ep + k_i·∫ev dt) · mass / eta, ±μ·m·g)
+    //   Errors are formed against a rate-limited vx_ref (slew ≤ vx_ref_rate).
+    PIDYawController(double kp_yaw, double ki_yaw, double kd_yaw, double i_max_yaw,
+                     double d_tau_yaw, double mass, double k_p, double k_i, double b, double eta,
+                     double mu, double vx_ref_rate)
+        : kp_yaw_(kp_yaw),
           ki_yaw_(ki_yaw),
+          kd_yaw_(kd_yaw),
+          i_max_yaw_(i_max_yaw),
+          d_tau_yaw_(d_tau_yaw),
           mass_(mass),
           kp_longi_(k_p),
           ki_longi_(k_i),
-          eta_(eta) {}
+          b_sp_(b),
+          eta_(eta),
+          mu_(mu),
+          vx_ref_rate_(vx_ref_rate) {}
+
+    // Default: all parameters from config.hpp.
+    PIDYawController()
+        : PIDYawController(PIDYawControllerConfig::kp, PIDYawControllerConfig::ki,
+                           PIDYawControllerConfig::kd, PIDYawControllerConfig::i_max,
+                           PIDYawControllerConfig::d_tau, VehicleConfig::mass,
+                           LongitudinalPiConfig::k_p, LongitudinalPiConfig::k_i,
+                           LongitudinalPiConfig::b, LongitudinalPiConfig::eta, VehicleConfig::mu,
+                           LongitudinalPiConfig::vx_ref_rate) {}
 
     // Must be called once per control cycle before computeImpl.
     void setDt(double dt) { dt_ = dt; }
@@ -65,79 +73,104 @@ class PIDYawController : public IYawController<PIDYawController> {
         (void)forces;  // reserved for future combined-slip feedforward
 
         const double vx = s.vx_;
-        const double vy = s.vy_;
         const double r = s.yaw_rate_;
-        const double delta = cmd.steering_angle_;
         const double vx_ref = cmd.vx_ref_;
         const double r_ref = cmd.r_ref_;
 
-        // -----------------------------------------------------------------------
-        // Yaw moment feedforward — bicycle model steady-state
-        // -----------------------------------------------------------------------
-        double mz_ff = 0.0;
-        if (std::abs(vx) > 0.5) {
-            const double alpha_f = delta - ((vy + (l_f_ * r_ref)) / vx);
-            const double alpha_r = -((vy - (l_r_ * r_ref)) / vx);
-            mz_ff = ((l_r_ * c_r_) * alpha_r) - ((l_f_ * c_f_) * alpha_f);
+        // PID for yaw rate tracking.
+        // Yaw-rate error is bidirectional (r_ref < 0 in right-hand turns), so the
+        // integrator must accumulate in both directions. Anti-windup is a symmetric
+        // clamp on the integral term rather than a one-sided reset — the previous
+        // `if (e_r < 0) reset` dumped the integral on every right turn.
+        const double e_r = r_ref - r;
+        e_r_integral_ += e_r * dt_;
+        if (ki_yaw_ > 0.0) {
+            const double integral_limit = i_max_yaw_ / ki_yaw_;
+            e_r_integral_ = std::clamp(e_r_integral_, -integral_limit, integral_limit);
         }
 
-        // PID for yaw rate tracking, no D term right now
-        const double e_r = r_ref - r;
-        e_r_integral_ += e_r * dt_;  // TODO: maybe need some anti windup
+        // Derivative term on the yaw-rate error, low-pass filtered (time constant
+        // d_tau_yaw). The error comes straight from the gyro, so the raw finite
+        // difference is noise-dominated — kd on it would inject noise into Mz.
+        double mz_d = 0.0;
+        if (yaw_d_init_ && dt_ > 0.0) {
+            const double de_r_raw = (e_r - e_r_prev_) / dt_;
+            const double beta = dt_ / (d_tau_yaw_ + dt_);
+            de_r_filt_ += beta * (de_r_raw - de_r_filt_);
+            mz_d = kd_yaw_ * de_r_filt_;
+        }
+        e_r_prev_ = e_r;
+        yaw_d_init_ = true;
 
-        const double mz_pid = (kp_yaw_ * e_r) + (ki_yaw_ * e_r_integral_);
-
-        const double mz = mz_ff + mz_pid;
+        const double mz = (kp_yaw_ * e_r) + (ki_yaw_ * e_r_integral_) + mz_d;
 
         // -----------------------------------------------------------------------
-        // Fx demand — PI velocity tracker + loss feedforward (TU Munich / KIT FSG approach)
+        // Fx demand — 2-DoF PI velocity tracker (no feedforward).
         //
-        //   Fx_total = (k_p·ev + k_i·∫ev dt) · m / η + f_loss
-        //
-        // Loss feedforward reduces integral windup by compensating known disturbances.
-        // Applied only during acceleration — during braking the losses already assist
-        // deceleration so adding them would oppose the braking demand.
+        //   Fx_total = (k_p·ep + k_i·∫ev dt) · m / η
         // -----------------------------------------------------------------------
-        const double e_vx = vx_ref - vx;
+        // Rate-limit the velocity reference so a stepped target (e.g. launch from
+        // rest) can't produce a huge instantaneous error that slams Fx to
+        // saturation. Seed the ramp from the current speed on the first tick.
+        if (!vx_ref_init_) {
+            vx_ref_ramped_ = vx;
+            vx_ref_init_ = true;
+        }
+        const double max_step = vx_ref_rate_ * dt_;
+        vx_ref_ramped_ = std::clamp(vx_ref, vx_ref_ramped_ - max_step, vx_ref_ramped_ + max_step);
+
+        // 2-DoF PI: the integral acts on the full error (drives steady-state to
+        // zero), while the proportional acts on a setpoint-weighted error so a
+        // reference step doesn't produce a full proportional kick.
+        // Anti-windup is a symmetric clamp sized so the integral term alone stays
+        // within the grip limit — the error is bidirectional (overspeed needs a
+        // negative Fx), so a one-sided reset would dump the integral on every
+        // overshoot of the ramped reference and preclude integral action while
+        // decelerating.
+        const double e_vx = vx_ref_ramped_ - vx;              // integral error
+        const double e_vx_p = (b_sp_ * vx_ref_ramped_) - vx;  // proportional error
         e_vx_integral_ += e_vx * dt_;
-        const double f_aero = (0.5 * rho_ * c_d_ * frontal_area_) * (vx * vx);
-        const double f_roll = c_rr_ * mass_ * 9.81;
-        const double f_loss = (e_vx > 0.0) ? (f_aero + f_roll) : 0.0;
-        const double fx_total =
-            (((kp_longi_ * e_vx) + (ki_longi_ * e_vx_integral_)) * (mass_ / eta_)) +
-            f_loss;  // limiting currently happens in torque allocator
+        if (ki_longi_ > 0.0) {
+            const double integral_limit = (mu_ * kGravity * eta_) / ki_longi_;
+            e_vx_integral_ = std::clamp(e_vx_integral_, -integral_limit, integral_limit);
+        }
+        const double fx_raw =
+            ((kp_longi_ * e_vx_p) + (ki_longi_ * e_vx_integral_)) * (mass_ / eta_);
 
+        // Clamp to the longitudinal grip limit ±μ·m·g so the demand stays within
+        // what the tyres can deliver (the allocator would otherwise ride saturation).
+        const double fx_max = mu_ * mass_ * kGravity;
+        const double fx_total = std::clamp(fx_raw, -fx_max, fx_max);
         return YawMomentCommand{.mz_ = mz, .fx_total_ = fx_total};
     }
 
    private:
-    // Bicycle model parameters (yaw moment feedforward)
-    const double c_f_;  // front cornering stiffness [N/rad]
-    const double c_r_;  // rear cornering stiffness [N/rad]
-    const double l_f_;  // front axle to CG [m]
-    const double l_r_;  // rear axle to CG [m]
-
-    // Loss feedforward parameters
-    const double rho_;           // air density [kg/m³]
-    const double c_d_;           // drag coefficient
-    const double frontal_area_;  // frontal reference area [m²]
-    const double c_rr_;          // rolling resistance coefficient
-
     // PID Yaw parameters
     const double kp_yaw_;
     const double ki_yaw_;
+    const double kd_yaw_;     // derivative gain (on yaw-rate error)
+    const double i_max_yaw_;  // symmetric integral-term clamp [Nm]
+    const double d_tau_yaw_;  // derivative low-pass time constant [s]
 
-    // Longitudinal PI parameters
-    const double mass_;      // vehicle mass [kg]
-    const double kp_longi_;  // proportional gain [1/s]
-    const double ki_longi_;  // integral gain     [1/s²]
-    const double eta_;       // drivetrain efficiency
+    // Longitudinal 2-DoF PI parameters
+    const double mass_;         // vehicle mass [kg]
+    const double kp_longi_;     // proportional gain [1/s]
+    const double ki_longi_;     // integral gain     [1/s²]
+    const double b_sp_;         // setpoint weight on the proportional term [0, 1]
+    const double eta_;          // drivetrain efficiency
+    const double mu_;           // tyre-road friction coefficient (Fx grip clamp)
+    const double vx_ref_rate_;  // max velocity-reference slew [m/s²]
 
     // Yaw PID state
     double e_r_integral_{0.0};  // integral of yaw rate error [rad]
+    double e_r_prev_{0.0};      // previous yaw-rate error [rad/s] (for the derivative term)
+    double de_r_filt_{0.0};     // low-pass-filtered error derivative [rad/s²]
+    bool yaw_d_init_{false};    // seed e_r_prev_ on the first tick to avoid a spike
 
     // PI state
     double e_vx_integral_{0.0};  // integral of velocity error [m]
+    double vx_ref_ramped_{0.0};  // rate-limited velocity reference [m/s]
+    bool vx_ref_init_{false};    // seed the ramp from measured vx on first tick
 
     // Time step — updated each cycle via setDt()
     double dt_{0.0};

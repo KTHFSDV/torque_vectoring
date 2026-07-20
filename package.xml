@@ -16,9 +16,11 @@
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>eigen</depend>
-  <depend>osqp-eigen</depend>
   <depend>vehicle_params_cpp</depend>
+  <depend>fs_msgs</depend>
+  <depend>ros2can_msgs</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
