@@ -22,7 +22,7 @@ struct VehicleConfig {
         kthfs::vehicle::dev19::cg_height_m};  // centre-of-gravity height [m]
     static constexpr double wheelbase{
         kthfs::vehicle::dev19::wheelbase_m};  // front-to-rear axle distance [m]
-    static constexpr double l_r{0.705};       // rear axle to CG [m]  →  l_f = wheelbase - l_r
+    static constexpr double l_r{0.612};       // rear axle to CG [m]  →  l_f = wheelbase - l_r
     static constexpr double trackwidth_front{
         kthfs::vehicle::dev19::track_width_m};  // front track width [m]
     static constexpr double trackwidth_rear{
@@ -77,12 +77,12 @@ struct BicycleModelConfig {
 };
 
 struct PIDYawControllerConfig {
-    static constexpr double kp{250};  // Proportional term for yaw rate error tracking
-    static constexpr double ki{50};   // Integral term for yaw rate error tracking
-    static constexpr double kd{20};   // Derivative term on the yaw-rate error
+    static constexpr double kp{600};  // Proportional term for yaw rate error tracking
+    static constexpr double ki{1};    // Integral term for yaw rate error tracking
+    static constexpr double kd{0};    // Derivative term on the yaw-rate error
     static constexpr double i_max{
-        1000.0};  // yaw integral-term saturation [Nm] — symmetric anti-windup clamp.
-                  // Tune to the yaw-moment authority the allocator can realise.
+        250.0};  // yaw integral-term saturation [Nm] — symmetric anti-windup clamp.
+                 // Tune to the yaw-moment authority the allocator can realise.
     static constexpr double d_tau{
         0.02};  // low-pass time constant on the derivative term [s]. The yaw-rate
                 // error comes straight from the gyro, so the raw derivative is
@@ -90,20 +90,20 @@ struct PIDYawControllerConfig {
 };
 
 struct LongitudinalPiConfig {
-    static constexpr double k_p{2.0};  // proportional gain [1/s] — velocity-loop bandwidth.
+    static constexpr double k_p{6.0};  // proportional gain [1/s] — velocity-loop bandwidth.
                                        // Full Fx (grip clamp μg≈15.7 m/s²) is reached at a
                                        // velocity error of μg/k_p; keep k_p low (~1–3) so
                                        // tracking noise doesn't slam the demand to saturation.
-    static constexpr double k_i{1.0};  // integral gain     [1/s²]
+    static constexpr double k_i{0.5};  // integral gain     [1/s²]
     static constexpr double b{0.8};    // setpoint weight on the proportional term (2-DoF PI),
                                        // [0, 1]. 1 → classic PI; <1 softens the proportional
                                        // kick on reference steps without changing disturbance
                                        // rejection (the integral still sees the full error).
     static constexpr double eta{1.0};  // drivetrain efficiency
     static constexpr double vx_ref_rate{
-        5.0};  // max rate of change of the velocity reference [m/s²]. Ramps vx_ref so a
-               // step target (e.g. launch from rest) doesn't slam Fx to saturation.
-               // Keep below the grip limit μ·g ≈ 15.7 m/s².
+        20.0};  // max rate of change of the velocity reference [m/s²]. Ramps vx_ref so a
+                // step target (e.g. launch from rest) doesn't slam Fx to saturation.
+                // Keep below the grip limit μ·g ≈ 15.7 m/s².
 };
 
 struct AllocatorConfig {

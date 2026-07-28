@@ -41,10 +41,13 @@ namespace tv {
 //
 // The wheel radius enters only at the output: T_motor = F · R / gear_ratio.
 //
-// NOTE: this layer enforces NO actuator or friction-circle limits. Motor-torque and
-// tyre-grip bounds are assumed to be handled upstream (or by downstream clipping);
-// adding them here would make the problem a genuinely constrained QP for which the
-// closed form no longer holds.
+// NOTE: the closed form enforces no friction-circle limits — those are assumed to be
+// handled upstream, since adding them would make this a genuinely constrained QP for
+// which the closed form no longer holds. The one exception is a hard per-wheel motor-
+// torque saturation applied to the output (see t_max): a simple symmetric clip that
+// keeps every command within actuator authority. Clipping a wheel independently
+// distorts the realised [Fx, Mz], but this is the standard downstream saturation and
+// keeps the solver from ever commanding an unachievable torque.
 //
 // Reference: De Novellis et al. (SAE 2013-01-0673)
 class LdltTorqueAllocator : public ITorqueAllocator<LdltTorqueAllocator> {
@@ -54,14 +57,16 @@ class LdltTorqueAllocator : public ITorqueAllocator<LdltTorqueAllocator> {
     //   gear_ratio  motor → wheel gear ratio (output: T_motor = F·R / gear_ratio)
     //   t_f         front track width [m]
     //   t_r         rear track width [m]
+    //   t_max       per-wheel motor-torque limit [Nm]; each output is clipped to
+    //               [-t_max, t_max]. Use a large value to effectively disable.
     //
     // QP weights:
     //   w_fx   weight on Fx tracking error
     //   w_mz   weight on Mz tracking error  (typically >> w_fx for racing)
     //   w_reg  load-inverse regularisation weight on driving-force magnitude
     LdltTorqueAllocator(double r_w, double gear_ratio, double t_f, double t_r, double w_fx,
-                       double w_mz, double w_reg)
-        : r_w_(r_w), gear_ratio_(gear_ratio), w_reg_(w_reg) {
+                       double w_mz, double w_reg, double t_max)
+        : r_w_(r_w), gear_ratio_(gear_ratio), w_reg_(w_reg), t_max_(t_max) {
         // --- Dependency matrix G (2×4): driving forces → [Fx, Mz] ---
         // Radius-independent — depends only on the half-track widths.
         const double sf = t_f / 2.0;
@@ -128,9 +133,11 @@ class LdltTorqueAllocator : public ITorqueAllocator<LdltTorqueAllocator> {
         }
         Eigen::Vector4d u = ldlt.solve(rhs);
 
-        // Convert per-wheel driving force to motor torque: T_motor = F·R / gear_ratio.
+        // Convert per-wheel driving force to motor torque: T_motor = F·R / gear_ratio,
+        // then clip to the per-wheel actuator limit so no wheel is ever commanded
+        // beyond motor authority (see NOTE above on the resulting [Fx, Mz] distortion).
         for (int i = 0; i < 4; ++i) {
-            u[i] = (u[i] * r_w_) / gear_ratio_;
+            u[i] = std::clamp((u[i] * r_w_) / gear_ratio_, -t_max_, t_max_);
         }
 
         // Guard against NaN/Inf — hold the previous solution.
@@ -152,6 +159,7 @@ class LdltTorqueAllocator : public ITorqueAllocator<LdltTorqueAllocator> {
     double r_w_;         // wheel radius [m]
     double gear_ratio_;  // motor → wheel gear ratio
     double w_reg_;       // load-inverse regularisation weight
+    double t_max_;       // per-wheel motor-torque saturation limit [Nm]
 
     // Dependency matrix G (2×4), constant across cycles.
     Eigen::Matrix<double, 2, 4> g_mat_;

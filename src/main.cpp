@@ -22,7 +22,8 @@ int main(int argc, char* argv[]) {
     LdltTorqueAllocator torque_allocator(VehicleConfig::wheel_radius, VehicleConfig::gear_ratio,
                                         VehicleConfig::trackwidth_front,
                                         VehicleConfig::trackwidth_rear, AllocatorConfig::w_fx,
-                                        AllocatorConfig::w_mz, AllocatorConfig::w_reg);
+                                        AllocatorConfig::w_mz, AllocatorConfig::w_reg,
+                                        VehicleConfig::motor_t_max);
 
     Orchestrator orchestrator(std::move(force_estimator), std::move(yaw_controller),
                               std::move(torque_allocator));
