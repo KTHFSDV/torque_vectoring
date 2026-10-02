@@ -6,7 +6,7 @@
 
 namespace tv {
 
-// Full vehicle state — populated from IMU, odometry, and steering sensor.
+// Populated from the IMU, odometry, and the steering sensor.
 struct VehicleState {
     double vx_{0.0};             // longitudinal velocity [m/s]
     double vy_{0.0};             // lateral velocity      [m/s]
@@ -23,7 +23,6 @@ struct ForceVector {
     std::array<double, 4> fz_{};  // normal forces       [N]
 };
 
-// High-level controller output: yaw moment + total longitudinal force demand.
 struct YawMomentCommand {
     double mz_{0.0};        // corrective yaw moment [Nm]
     double fx_total_{0.0};  // total longitudinal force demand [N]
@@ -37,15 +36,12 @@ struct SteeringCommand {
 };
 
 // Per-wheel torque commands [FL, FR, RL, RR] (Nm).
-// Kept as Eigen — returned directly from the allocator solve and used in DFO loops.
 using WheelTorques = Eigen::Vector4d;
 
 // Per-wheel angular velocities [FL, FR, RL, RR] (rad/s).
-// Kept as Eigen — used in element-wise DFO loops.
 using WheelOmegas = Eigen::Vector4d;
 
-// Per-stage pipeline execution times [µs] — published on debug/timing for
-// telemetry; carries no control meaning.
+// Per-stage pipeline execution times [µs] — telemetry only, no control meaning.
 struct StageTimings {
     double forces_us{0.0};  // force estimator (stage 1)
     double yaw_us{0.0};     // yaw moment generator (stage 2)
@@ -53,9 +49,8 @@ struct StageTimings {
     double total_us{0.0};   // full pipeline
 };
 
-// Full pipeline output: final wheel torques plus every intermediate signal.
-// The intermediates carry no control meaning here — they exist so the ROS node
-// can publish them on debug topics for telemetry/plotting.
+// Full pipeline output. The intermediates exist so the ROS node can publish them
+// on debug topics.
 struct PipelineResult {
     ForceVector forces{};        // tyre force estimate (stage 1)
     YawMomentCommand yaw_cmd{};  // yaw moment + Fx demand (stage 2)

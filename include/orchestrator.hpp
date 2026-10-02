@@ -11,8 +11,7 @@
 
 namespace tv {
 
-// Online mean / sample standard deviation (Welford's algorithm) — numerically
-// stable, O(1) memory. Used for the per-stage timing statistics.
+// Online mean / sample standard deviation (Welford's algorithm).
 class RunningStat {
    public:
     void add(double x) noexcept {
@@ -42,21 +41,13 @@ class Orchestrator {
           yaw_generator_(std::move(yaw_generator)),
           torque_allocator_(std::move(torque_allocator)) {}
 
-    /// Execute the full pipeline for the given vehicle state and driver inputs.
-    /// `dt` is the elapsed time since the previous call [s]; it is forwarded to
-    /// any stage that needs a control period (e.g. the yaw controller's
-    /// integrators). Stages that do not expose setDt() are left untouched.
-    /// Returns the final wheel torques together with every intermediate signal
-    /// (tyre forces, yaw moment command) and per-stage execution times — this
-    /// cycle plus running mean / standard deviation since startup — so callers
-    /// can publish them for debug. Timing is measured with steady_clock and
-    /// returned rather than printed — no blocking I/O in the control loop.
-    /// `alloc_ok` is false when the allocator reported a failed solve (it holds
-    /// its previous solution), so callers can warn.
+    /// Runs the pipeline and returns the wheel torques together with every
+    /// intermediate signal and per-stage timing, for debug publication. `dt` is the
+    /// elapsed time since the previous call [s]. `alloc_ok` is false when the
+    /// allocator held its previous solution after a failed solve.
     [[nodiscard]] PipelineResult run(const VehicleState& state, const SteeringCommand& cmd,
                                      double dt) {
-        // Forward the control period to stages that track one. Kept optional via
-        // `requires` so the generic concepts don't have to mandate setDt().
+        // Optional so the concepts don't have to mandate setDt().
         if constexpr (requires(Y& y) { y.setDt(dt); }) {
             yaw_generator_.setDt(dt);
         }
@@ -82,8 +73,6 @@ class Orchestrator {
         timing_stats_[2].add(timings.alloc_us);
         timing_stats_[3].add(timings.total_us);
 
-        // Surface a failed allocation when the stage reports one. Kept optional
-        // via `requires` so the generic concepts don't have to mandate it.
         bool alloc_ok = true;
         if constexpr (requires(const A& a) {
                           { a.lastSolveOk() } -> std::convertible_to<bool>;
@@ -106,10 +95,8 @@ class Orchestrator {
                               .alloc_ok = alloc_ok};
     }
 
-    /// Forward per-wheel feedback (motor torque, wheel angular velocity, and the
-    /// sample period between wheel-speed messages) to the force-estimation stage,
-    /// when that stage consumes it. No-op for stages that don't expose it, so the
-    /// generic concepts don't have to mandate updateWheelState().
+    /// Forwards per-wheel feedback to the force-estimation stage, when that stage
+    /// consumes it. No-op otherwise, so the concepts needn't mandate it.
     void updateWheelState(const WheelTorques& motor_torques, const WheelOmegas& wheel_omegas,
                           double dt) {
         if constexpr (requires(F& f) { f.updateWheelState(motor_torques, wheel_omegas, dt); }) {
@@ -126,12 +113,10 @@ class Orchestrator {
     Y yaw_generator_;
     A torque_allocator_;
 
-    // Per-stage timing statistics [forces, yaw, alloc, total], accumulated over
-    // the whole run.
+    // [forces, yaw, alloc, total]
     std::array<RunningStat, 4> timing_stats_{};
 };
 
-// CTAD: Orchestrator{f, y, a} deduces template args without explicit spelling
 template <ForceEstimator F, YawMomentGenerator Y, TorqueAllocator A>
 Orchestrator(F, Y, A) -> Orchestrator<F, Y, A>;
 
