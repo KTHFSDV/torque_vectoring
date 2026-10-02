@@ -145,7 +145,7 @@ jobs:
         sleep 5
         
         # Check if ROS2 nodes are running
-        if ! docker exec $CONTAINER_NAME bash -c "source /ws/install/setup.bash && ros2 node list" | grep -E "time_publisher|time_subscriber"; then
+        if ! docker exec $CONTAINER_NAME bash -c "source /ws/install/setup.bash && ros2 node list" | grep -E "torque_vectoring_node"; then
           echo "Health check failed!"
           echo "Expected nodes not found. Current nodes:"
           docker exec $CONTAINER_NAME bash -c "source /ws/install/setup.bash && ros2 node list"

@@ -1,7 +1,0 @@
-# Parameters for torque_vectoring_pkg nodes
-# This file is loaded by the launch file and passed to the nodes.
-
-# Time Publisher Node Parameters
-time_publisher:
-  ros__parameters:
-    publish_rate: 1.0  # Publishing rate in Hz (messages per second)

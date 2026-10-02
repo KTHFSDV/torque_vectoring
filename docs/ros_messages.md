@@ -1,46 +1,50 @@
 # ROS2 Messages
 
-Messages used in this package and the purpose for each message.
+Topic names are as remapped in [launch.py](../launch/launch.py). Wheel order in all arrays is `[FL, FR, RL, RR]`.
 
 ## Input
 
-### `/my_input/path`
+### `/navigation/dv_control_target`
 
-- **Type**: `my_msgs/msg/Type`
+- **Type**: `fs_msgs/msg/CarCommand`
+- **Purpose**: Steering angle (deg), target velocity and target yaw rate from the control stack.
 
-- **Purpose**: Brief description of the purpose of this message
+### `/odom`
 
-...
+- **Type**: `nav_msgs/msg/Odometry`
+- **Purpose**: Longitudinal and lateral velocity. SensorData QoS.
+
+### `/imu`
+
+- **Type**: `sensor_msgs/msg/Imu`
+- **Purpose**: Yaw rate and accelerations. Each IMU message triggers one control cycle, so the output rate follows the IMU rate. SensorData QoS.
+
+### `/vehicle/wheel_speeds`
+
+- **Type**: `fs_msgs/msg/Wheelspeeds`
+- **Purpose**: Per-wheel angular speeds. SensorData QoS.
+
+### `/ros2can/receive/vehicle_status_motor_torques`
+
+- **Type**: `ros2can_msgs/msg/VehicleStatusMotorTorques`
+- **Purpose**: Measured motor torques.
 
 ## Output
 
-### `/current_time`
+### `/ros2can/send/dv_control_target_tv`
 
-- **Type**: `std_msgs/msg/String`
+- **Type**: `ros2can_msgs/msg/DvControlTargetTv`
+- **Purpose**: Per-wheel torque targets and steering angle target (deg) sent to the car over CAN. Zero torque is commanded if `cmd_in` or `odom` goes stale.
 
-- **Purpose**: Publishes the current ROS2 time as a formatted string
+### Debug topics
 
-### `/my_output/steering_angle`
+All `std_msgs/msg/Float64MultiArray` unless noted.
 
-- **Type**: `my_msgs/msg/Type`
-
-- **Purpose**: Brief description of the purpose of this message
-
-...
-
-## Example Topic Commands
-
-List topics:
-```bash
-ros2 topic list
-```
-
-Echo a topic:
-```bash
-ros2 topic echo /current_time
-```
-
-Get topic info:
-```bash
-ros2 topic info /current_time
-```
+| Topic | Content |
+| --- | --- |
+| `/debug/tire_fx`, `/debug/tire_fy`, `/debug/tire_fz` | Estimated tire forces per wheel |
+| `/debug/yaw_moment` | `[Mz, Fx_total]` demand from the yaw controller |
+| `/debug/wheel_torques` | Allocated wheel torques |
+| `/debug/timing` | Pipeline timing |
+| `/debug/tracking` | Yaw rate tracking |
+| `/debug/alloc_yaw_moment`, `/debug/alloc_fx_total` | `std_msgs/msg/Float64`, achieved demand after allocation (only built with `-DDEBUG`) |

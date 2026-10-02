@@ -13,12 +13,6 @@ from launch_ros.actions import Node
 def generate_launch_description():
     """Generate launch description for torque_vectoring_pkg."""
 
-    # Get the package share directory
-    # pkg_share = get_package_share_directory("torque_vectoring_pkg")
-
-    # Path to the parameters file
-    # params_file = os.path.join(pkg_share, "config", "parameters.yaml")
-
     return LaunchDescription(
         [
             Node(
