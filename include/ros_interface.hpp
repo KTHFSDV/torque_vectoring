@@ -2,20 +2,27 @@
 
 #include <fs_msgs/msg/car_command.h>
 
+#include <Eigen/Geometry>
 #include <cstddef>
+#include <memory>
+#include <optional>
 #include <nav_msgs/msg/odometry.hpp>
 #include <numbers>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <std_msgs/msg/float64.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#include <string>
+#include <tf2/exceptions.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 
 #include "config.hpp"
 #include "fs_msgs/msg/car_command.hpp"
-#include "fs_msgs/msg/wheelspeeds.hpp"
 #include "orchestrator.hpp"
 #include "ros2can_msgs/msg/dv_control_target_tv.hpp"
 #include "ros2can_msgs/msg/vehicle_status_motor_torques.hpp"
+#include "ros2can_msgs/msg/vehicle_status_wheel_speed.hpp"
 #include "types.hpp"
 
 namespace tv {
@@ -23,9 +30,9 @@ namespace tv {
 /// ROS2 node that wraps the full torque-vectoring pipeline.
 ///
 /// Subscriptions:
-///   imu             sensor_msgs/Imu                       — yaw_rate, ax, ay
+///   imu             sensor_msgs/Imu                       — yaw_rate, ax, ay (→ base_frame)
 ///   odom            nav_msgs/Odometry                     — body velocities vx, vy
-///   wheel_speeds    fs_msgs/Wheelspeeds                   — per-wheel ω [FL,FR,RL,RR] (rad/s)
+///   wheel_speeds    ros2can_msgs/VehicleStatusWheelSpeed  — per-wheel motor rpm [FL,FR,RL,RR]
 ///   motor_torques   ros2can_msgs/VehicleStatusMotorTorques — per-wheel motor torque (Nm)
 ///   cmd_in          fs_msgs/CarCommand                    — steering_angle [deg], vx_ref, r_ref
 ///
@@ -33,13 +40,18 @@ namespace tv {
 ///   cmd_out         ros2can_msgs/DvControlTargetTv        — per-wheel targets + steering
 ///
 /// The pipeline runs on every IMU message; the other inputs are cached on receipt
-/// and take effect on the next IMU tick.
+/// and take effect on the next IMU tick. Zero torque is commanded until the IMU →
+/// base_frame transform is available.
 template <ForceEstimator F, YawMomentGenerator Y, TorqueAllocator A>
 class TVNode : public rclcpp::Node {
    public:
     explicit TVNode(Orchestrator<F, Y, A> orchestrator,
                     const std::string& node_name = "torque_vectoring")
         : Node(node_name), orchestrator_(std::move(orchestrator)) {
+        base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
+        tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+        tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
+
         imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
             "imu", rclcpp::SensorDataQoS(),
             [this](sensor_msgs::msg::Imu::SharedPtr msg) { imuCallback(msg); });
@@ -48,9 +60,11 @@ class TVNode : public rclcpp::Node {
             "odom", rclcpp::SensorDataQoS(),
             [this](nav_msgs::msg::Odometry::SharedPtr msg) { odomCallback(msg); });
 
-        wheel_speeds_sub_ = create_subscription<fs_msgs::msg::Wheelspeeds>(
-            "wheel_speeds", rclcpp::SensorDataQoS(),
-            [this](fs_msgs::msg::Wheelspeeds::SharedPtr msg) { wheelSpeedsCallback(msg); });
+        wheel_speeds_sub_ = create_subscription<ros2can_msgs::msg::VehicleStatusWheelSpeed>(
+            "wheel_speeds", 10,
+            [this](ros2can_msgs::msg::VehicleStatusWheelSpeed::SharedPtr msg) {
+                wheelSpeedsCallback(msg);
+            });
 
         motor_torques_sub_ = create_subscription<ros2can_msgs::msg::VehicleStatusMotorTorques>(
             "motor_torques", 10,
@@ -87,18 +101,11 @@ class TVNode : public rclcpp::Node {
 
    private:
     void imuCallback(const sensor_msgs::msg::Imu::SharedPtr& msg) {
-        if (first_imu_recieved_) {
-            // 200 ms imu filter, assumes imu at 100 hz
-            state_.yaw_rate_ = msg->angular_velocity.z;
-            state_.ax_ -= state_.ax_ / 20;
-            state_.ax_ += msg->linear_acceleration.x / 20;
-            state_.ay_ -= state_.ay_ / 20;
-            state_.ay_ += msg->linear_acceleration.y / 20;
-        } else {
-            first_imu_recieved_ = true;
-            state_.yaw_rate_ = msg->angular_velocity.z;
-            state_.ax_ = msg->linear_acceleration.x;
-            state_.ay_ = msg->linear_acceleration.y;
+        const std::optional<Eigen::Isometry3d> imu_to_base =
+            lookupImuTransform(msg->header.frame_id);
+        if (!imu_to_base) {
+            publishZeroTorque();
+            return;
         }
 
         // dt = 0 on the first tick and on out-of-order or duplicate stamps.
@@ -110,6 +117,38 @@ class TVNode : public rclcpp::Node {
         last_stamp_ = stamp;
         have_last_stamp_ = true;
 
+        const Eigen::Matrix3d rot = imu_to_base->rotation();
+        const Eigen::Vector3d omega =
+            rot * Eigen::Vector3d(msg->angular_velocity.x, msg->angular_velocity.y,
+                                  msg->angular_velocity.z);
+        const Eigen::Vector3d accel_imu =
+            rot * Eigen::Vector3d(msg->linear_acceleration.x, msg->linear_acceleration.y,
+                                  msg->linear_acceleration.z);
+
+        // Lever-arm correction: a_base = a_imu - alpha x r - omega x (omega x r), with r the IMU
+        // position in base_frame. alpha is a finite difference of omega; zero when dt is unknown.
+        const Eigen::Vector3d alpha =
+            (dt > 0.0 && have_last_omega_) ? Eigen::Vector3d((omega - last_omega_) / dt)
+                                           : Eigen::Vector3d::Zero();
+        last_omega_ = omega;
+        have_last_omega_ = true;
+        const Eigen::Vector3d r = imu_to_base->translation();
+        const Eigen::Vector3d accel = accel_imu - alpha.cross(r) - omega.cross(omega.cross(r));
+
+        if (first_imu_recieved_) {
+            // 200 ms imu filter, assumes imu at 100 hz
+            state_.yaw_rate_ = omega.z();
+            state_.ax_ -= state_.ax_ / 20;
+            state_.ax_ += accel.x() / 20;
+            state_.ay_ -= state_.ay_ / 20;
+            state_.ay_ += accel.y() / 20;
+        } else {
+            first_imu_recieved_ = true;
+            state_.yaw_rate_ = omega.z();
+            state_.ax_ = accel.x();
+            state_.ay_ = accel.y();
+        }
+
         // Stale or missing driver commands / odometry — command zero torque.
         const rclcpp::Time now_time = now();
         const auto is_stale = [&](bool received, const rclcpp::Time& last_rx) {
@@ -118,10 +157,7 @@ class TVNode : public rclcpp::Node {
         if (is_stale(have_cmd_, last_cmd_rx_) || is_stale(have_odom_, last_odom_rx_)) {
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
                                  "cmd_in/odom stale or missing — commanding zero torque");
-            ros2can_msgs::msg::DvControlTargetTv out;  // torque targets default to zero
-            out.dv_steering_angle_target_tv =
-                steering_cmd_.steering_angle_ * (180.0 / std::numbers::pi);
-            torque_pub_->publish(out);
+            publishZeroTorque();
             return;
         }
 
@@ -147,6 +183,39 @@ class TVNode : public rclcpp::Node {
         torque_pub_->publish(out);
 
         publishDebug(result);
+    }
+
+    // The IMU mount is static, so the transform is looked up once per frame and cached.
+    std::optional<Eigen::Isometry3d> lookupImuTransform(const std::string& imu_frame) {
+        if (imu_to_base_ && imu_frame == imu_frame_) {
+            return imu_to_base_;
+        }
+        try {
+            const auto tf =
+                tf_buffer_->lookupTransform(base_frame_, imu_frame, tf2::TimePointZero);
+            const auto& q = tf.transform.rotation;
+            const auto& t = tf.transform.translation;
+            Eigen::Isometry3d iso = Eigen::Isometry3d::Identity();
+            iso.linear() = Eigen::Quaterniond(q.w, q.x, q.y, q.z).normalized().toRotationMatrix();
+            iso.translation() = Eigen::Vector3d(t.x, t.y, t.z);
+            imu_to_base_ = iso;
+            imu_frame_ = imu_frame;
+            RCLCPP_INFO(get_logger(), "IMU transform %s -> %s acquired", imu_frame.c_str(),
+                        base_frame_.c_str());
+            return imu_to_base_;
+        } catch (const tf2::TransformException& ex) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                                 "no transform %s -> %s (%s) — commanding zero torque",
+                                 imu_frame.c_str(), base_frame_.c_str(), ex.what());
+            return std::nullopt;
+        }
+    }
+
+    void publishZeroTorque() {
+        ros2can_msgs::msg::DvControlTargetTv out;  // torque targets default to zero
+        out.dv_steering_angle_target_tv =
+            steering_cmd_.steering_angle_ * (180.0 / std::numbers::pi);
+        torque_pub_->publish(out);
     }
 
     void publishDebug(const PipelineResult& result) {
@@ -224,8 +293,8 @@ class TVNode : public rclcpp::Node {
     void odomCallback(const nav_msgs::msg::Odometry::SharedPtr& msg) {
       if (first_odom_recieved_) {
           // 200 ms odometry filter, assumes odometry at 100 hz
-          state_.vx_ -= state.vx_ / 20;
-          state_.vy_ -= state.vy_ / 20;
+          state_.vx_ -= state_.vx_ / 20;
+          state_.vy_ -= state_.vy_ / 20;
           state_.vx_ += msg->twist.twist.linear.x / 20;
           state_.vy_ += msg->twist.twist.linear.y / 20;
       } else {
@@ -237,13 +306,17 @@ class TVNode : public rclcpp::Node {
       have_odom_ = true;
     }
 
-    // Per-wheel ω [FL, FR, RL, RR] (rad/s) for the DFO; the sample period comes from
-    // consecutive wheel-speed stamps.
-    void wheelSpeedsCallback(const fs_msgs::msg::Wheelspeeds::SharedPtr& msg) {
+    // Per-wheel ω [FL, FR, RL, RR] (rad/s) for the DFO, converted from motor rpm. The CAN
+    // message carries no header, so the sample period comes from consecutive receive times.
+    void wheelSpeedsCallback(const ros2can_msgs::msg::VehicleStatusWheelSpeed::SharedPtr& msg) {
+        constexpr double motor_rpm_to_wheel_rad_s =
+            2.0 * std::numbers::pi / 60.0 / VehicleConfig::gear_ratio;
         WheelOmegas omegas;
-        omegas << msg->front_left, msg->front_right, msg->rear_left, msg->rear_right;
+        omegas << msg->wheel_speed_fl, msg->wheel_speed_fr, msg->wheel_speed_rl,
+            msg->wheel_speed_rr;
+        omegas *= motor_rpm_to_wheel_rad_s;
 
-        const rclcpp::Time stamp(msg->header.stamp);
+        const rclcpp::Time stamp = now();
         double dt = 0.0;
         if (have_last_wheel_stamp_ && stamp > last_wheel_stamp_) {
             dt = (stamp - last_wheel_stamp_).seconds();
@@ -261,7 +334,8 @@ class TVNode : public rclcpp::Node {
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
-    rclcpp::Subscription<fs_msgs::msg::Wheelspeeds>::SharedPtr wheel_speeds_sub_;
+    rclcpp::Subscription<ros2can_msgs::msg::VehicleStatusWheelSpeed>::SharedPtr
+        wheel_speeds_sub_;
     rclcpp::Subscription<ros2can_msgs::msg::VehicleStatusMotorTorques>::SharedPtr
         motor_torques_sub_;
     rclcpp::Subscription<fs_msgs::msg::CarCommand>::SharedPtr steering_sub_;
@@ -292,7 +366,7 @@ class TVNode : public rclcpp::Node {
     rclcpp::Time last_stamp_{0, 0, RCL_ROS_TIME};
     bool have_last_stamp_{false};
 
-    // Previous wheel-speed stamp — derives the DFO sample period.
+    // Previous wheel-speed receive time (node clock) — derives the DFO sample period.
     rclcpp::Time last_wheel_stamp_{0, 0, RCL_ROS_TIME};
     bool have_last_wheel_stamp_{false};
 
@@ -306,6 +380,17 @@ class TVNode : public rclcpp::Node {
     bool first_odom_recieved_{false};
 
     std::size_t alloc_failures_{0};
+
+    // IMU → base_frame transform, cached once the static transform is available.
+    std::string base_frame_;
+    std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
+    std::string imu_frame_;
+    std::optional<Eigen::Isometry3d> imu_to_base_;
+
+    // Previous base-frame ω — differentiated for the lever-arm angular acceleration.
+    Eigen::Vector3d last_omega_{Eigen::Vector3d::Zero()};
+    bool have_last_omega_{false};
 };
 
 template <ForceEstimator F, YawMomentGenerator Y, TorqueAllocator A>

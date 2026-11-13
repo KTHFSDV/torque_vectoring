@@ -17,14 +17,14 @@ Topic names are as remapped in [launch.py](../launch/launch.py). Wheel order in 
 ### `/imu`
 
 - **Type**: `sensor_msgs/msg/Imu`
-- **Purpose**: Yaw rate and accelerations. Each IMU message triggers one control cycle, so the output rate follows the IMU rate. SensorData QoS.
+- **Purpose**: Yaw rate and accelerations. Each IMU message triggers one control cycle, so the output rate follows the IMU rate. Transformed from `header.frame_id` into `base_frame` (parameter, default `base_link`) via TF, including a lever-arm correction for the IMU's offset; zero torque is commanded until that transform is available. SensorData QoS.
 
-### `/vehicle/wheel_speeds`
+### `/ros2can/recv/vehicle_status_wheel_speed`
 
-- **Type**: `fs_msgs/msg/Wheelspeeds`
-- **Purpose**: Per-wheel angular speeds. SensorData QoS.
+- **Type**: `ros2can_msgs/msg/VehicleStatusWheelSpeed`
+- **Purpose**: Per-wheel motor speeds in rpm, converted to wheel-side rad/s (divided by the gear ratio) for the force estimator. The message has no header, so the sample period is taken from receive times.
 
-### `/ros2can/receive/vehicle_status_motor_torques`
+### `/ros2can/recv/vehicle_status_motor_torques`
 
 - **Type**: `ros2can_msgs/msg/VehicleStatusMotorTorques`
 - **Purpose**: Measured motor torques.

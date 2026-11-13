@@ -22,6 +22,8 @@ find_package(Eigen3 REQUIRED)
 find_package(vehicle_params_cpp REQUIRED)
 find_package(ros2can_msgs REQUIRED)
 find_package(fs_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
 
 # C++ executable
 add_executable(torque_vectoring_node src/main.cpp)
@@ -35,6 +37,8 @@ ament_target_dependencies(torque_vectoring_node
   nav_msgs
   fs_msgs
   ros2can_msgs
+  tf2
+  tf2_ros
 )
 
 target_link_libraries(torque_vectoring_node

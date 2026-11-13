@@ -9,6 +9,7 @@ RUN mkdir -p /ws/src
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \
     python3-colcon-common-extensions \
+    ros-jazzy-rmw-cyclonedds-cpp \
     python3-rosdep \
     libeigen3-dev \
     && apt-get clean \
