@@ -6,22 +6,17 @@
 
 namespace tv {
 
-/// Type must provide: ForceVector estimate(const VehicleState&)
 template <typename T>
 concept ForceEstimator = requires(T estimator, const VehicleState& state) {
     { estimator.estimateForcesImpl(state) } -> std::same_as<ForceVector>;
 };
 
-/// Type must provide: YawMomentCommand computeImpl(const VehicleState&, const ForceVector&, const
-/// SteeringCommand&)
 template <typename T>
 concept YawMomentGenerator = requires(T generator, const VehicleState& state,
                                       const ForceVector& forces, const SteeringCommand& cmd) {
     { generator.computeImpl(state, forces, cmd) } -> std::same_as<YawMomentCommand>;
 };
 
-/// Type must provide: WheelTorques allocateImpl(const VehicleState&, const YawMomentCommand&, const
-/// ForceVector&)
 template <typename T>
 concept TorqueAllocator = requires(T allocator, const VehicleState& state,
                                    const YawMomentCommand& cmd, const ForceVector& forces) {

@@ -3,22 +3,24 @@
 <package format="3">
   <name>torque_vectoring_pkg</name>
   <version>0.0.1</version>
-  <description>Template package for ROS2 Jazzy</description>
+  <description>Torque vectoring controller for a 4WD electric race car: yaw moment control and per-wheel torque allocation</description>
 
-  <maintainer email="you@example.com">Your Name</maintainer>
+  <maintainer email="albin.oviktigt@gmail.com">Bulban</maintainer>
 
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>ament_cmake_python</buildtool_depend>
 
   <depend>rclcpp</depend>
-  <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>eigen</depend>
-  <depend>osqp-eigen</depend>
   <depend>vehicle_params_cpp</depend>
+  <depend>fs_msgs</depend>
+  <depend>ros2can_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
